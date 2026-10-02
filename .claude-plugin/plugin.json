@@ -1,0 +1,10 @@
+{
+  "name": "duo",
+  "version": "0.1.0",
+  "description": "Duo the owl quizzes you on Japanese in a pane while Claude works",
+  "author": { "name": "natsuin" },
+  "repository": "https://github.com/natsuin/claude-duo",
+  "license": "MIT",
+  "keywords": ["japanese", "duolingo", "quiz", "pane", "fun"],
+  "types": "./types/index.d.ts"
+}
