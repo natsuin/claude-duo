@@ -3,6 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Mounted } from 'claude-code/testing'
 
 import { HIRAGANA, PARTICLES, WORDS } from '../hooks/deck'
+import { owlCells } from '../hooks/owl'
 
 const PANE = {
   plugin: 'duo',
@@ -17,7 +18,7 @@ const START = { cwd: '/tmp', surface: 'terminal', isInteractive: true } as const
 function engine(on: On) {
   const opened: string[] = []
   mock.store(on)
-  mock.clock(on, { now: Date.UTC(2026, 9, 2, 12) })
+  const clock = mock.clock(on, { now: Date.UTC(2026, 9, 2, 12) })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
@@ -30,7 +31,7 @@ function engine(on: On) {
   on('ui.panes', () => ({ value: [] }))
   on('ui.focus', () => ({}))
 
-  return { opened }
+  return { opened, clock }
 }
 
 // The label the drawn question wants, worked out from the deck.
@@ -127,4 +128,23 @@ test('Duo opens on a typed prompt, tracks the turn, and /duo off stops the pop-u
   expect(ran.text).toMatch(/won't pop up/)
   await $.prompt.submit({ text: 'and another', wait: false, origin: { kind: 'composer' } })
   expect(opened).toEqual(['duo'])
+})
+
+test('45s into a turn with nothing answered, Duo glares and nags; one answer calms him', async ($, on) => {
+  const { clock } = engine(on)
+  await $.session.start(START)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const owl = async () => (await ui.find({ type: 'Raster', key: 'owl' }))?.props.cells
+
+  await $.turn.start({ text: 'refactor everything', turnId: 't1' })
+  await clock.advance(30_000)
+  expect(await ui.find({ text: /Duo sees everything/ })).toBeUndefined()
+
+  await clock.advance(16_000)
+  expect(await ui.find({ text: /coding for 46s and you've answered 0\. Duo sees everything/ })).toBeDefined()
+  expect(await owl()).toBe(owlCells('glare'))
+
+  await ui.press({ key: await choiceKey(ui, true) })
+  expect(await ui.find({ text: /Duo sees everything/ })).toBeUndefined()
+  expect(await owl()).toBe(owlCells('happy'))
 })

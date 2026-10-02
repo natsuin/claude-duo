@@ -1,32 +1,71 @@
 import type { Mood } from '../types'
 
-// Duo as 16×16 pixels. Rows 6 and 7 are the eyes, swapped per mood.
-const BODY = [
-  '..G..........G..',
-  '..GG........GG..',
-  '..GGGGGGGGGGGG..',
-  '.GGGGGGGGGGGGGG.',
-  '.GWWWWGGGGWWWWG.',
-  '.WWWWWWGGWWWWWW.',
-  '',
-  '',
-  '.GWWWWGOOGWWWWG.',
-  '.GGGGGGOOGGGGGG.',
-  'DGGLLLLLLLLLLGGD',
-  'DGLLLLLLLLLLLLGD',
-  'DGLLLLLLLLLLLLGD',
-  '.GGLLLLLLLLLLGG.',
-  '..GGGGGGGGGGGG..',
-  '...OO......OO...',
-]
-
-const EYES: Record<Mood, [string, string]> = {
-  idle: ['WWKKWW', 'WWKKWW'],
-  watch: ['KKWWWW', 'KKWWWW'],
-  happy: ['WWKKWW', 'WKWWKW'],
-  cheer: ['WWKKWW', 'WKWWKW'],
-  sad: ['WWWWWW', 'WWKKWW'],
+type Sprite = {
+  body: string[]
+  // Each mood redraws the face rows it changes, by row index.
+  faces: Record<Mood, Record<number, string>>
 }
+
+export type OwlSize = 'big' | 'small'
+
+const SPRITES: Record<OwlSize, Sprite> = {
+  // 16×16 pixels: a 16×8 Raster.
+  big: {
+    body: [
+      '..G..........G..',
+      '..GG........GG..',
+      '..GGGGGGGGGGGG..',
+      '.GGGGGGGGGGGGGG.',
+      '.GWWWWGGGGWWWWG.',
+      '.WWWWWWGGWWWWWW.',
+      '.WWKKWWGGWWKKWW.',
+      '.WWKKWWGGWWKKWW.',
+      '.GWWWWGOOGWWWWG.',
+      '.GGGGGGOOGGGGGG.',
+      'DGGLLLLLLLLLLGGD',
+      'DGLLLLLLLLLLLLGD',
+      'DGLLLLLLLLLLLLGD',
+      '.GGLLLLLLLLLLGG.',
+      '..GGGGGGGGGGGG..',
+      '...OO......OO...',
+    ],
+    faces: {
+      idle: {},
+      watch: { 6: '.KKWWWWGGKKWWWW.', 7: '.KKWWWWGGKKWWWW.' },
+      happy: { 7: '.WKWWKWGGWKWWKW.' },
+      cheer: { 7: '.WKWWKWGGWKWWKW.', 8: '.PWWWWGOOGWWWWP.' },
+      sad: { 6: '.WWWWWWGGWWWWWW.', 8: '.BWWWWGOOGWWWWG.' },
+      glare: { 4: '.GGGGGGGGGGGGGG.', 5: '.WDDDDDGGDDDDDW.', 6: '.WWKKWDGGDWKKWW.' },
+    },
+  },
+  // 10×8 pixels: a 10×4 Raster, for panes too short for the big one.
+  small: {
+    body: [
+      '.G......G.',
+      '.GGGGGGGG.',
+      'GWWWGGWWWG',
+      'GWKWGGWKWG',
+      'GGGGOOGGGG',
+      'DLLLLLLLLD',
+      '.GLLLLLLG.',
+      '..O....O..',
+    ],
+    faces: {
+      idle: {},
+      watch: { 3: 'GKWWGGKWWG' },
+      happy: { 2: 'GGKGGGGKGG', 3: 'GKGKGGKGKG' },
+      cheer: { 2: 'GGKGGGGKGG', 3: 'GKGKGGKGKG', 4: 'PGGGOOGGGP' },
+      sad: { 2: 'GDWWGGWWDG', 4: 'GBGGOOGGGG' },
+      glare: { 2: 'GWWDGGDWWG' },
+    },
+  },
+}
+
+/** The Raster's size in terminal cells: each cell holds two pixels, one above the other. */
+export const owlSize = (size: OwlSize) => ({
+  columns: (SPRITES[size].body[0] as string).length,
+  rows: SPRITES[size].body.length / 2,
+})
 
 const COLORS: Record<string, number> = {
   G: 0x58cc02,
@@ -41,20 +80,9 @@ const COLORS: Record<string, number> = {
 
 const DEFAULT = 0x01000000
 
-function pixels(mood: Mood): string[] {
-  const [top, bottom] = EYES[mood]
-  const rows = BODY.map((row, y) => (y === 6 ? `.${top}GG${top}.` : y === 7 ? `.${bottom}GG${bottom}.` : row))
-  const mark = (y: number, x: number, c: string) => {
-    const row = rows[y] as string
-    rows[y] = row.slice(0, x) + c + row.slice(x + 1)
-  }
-  if (mood === 'sad') mark(8, 1, 'B')
-  if (mood === 'cheer') {
-    mark(8, 1, 'P')
-    mark(8, 14, 'P')
-  }
-
-  return rows
+function pixels(mood: Mood, size: OwlSize): string[] {
+  const { body, faces } = SPRITES[size]
+  return body.map((row, y) => faces[mood][y] ?? row)
 }
 
 const ABC = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
@@ -75,40 +103,42 @@ function base64(bytes: Uint8Array): string {
   return out
 }
 
-const cache = new Map<Mood, string>()
+const cache = new Map<string, string>()
 
-// The owl as a 16×8 Raster: each cell is a half block, its top pixel the
+// The owl as a Raster: each cell is a half block, its top pixel the
 // foreground and its bottom pixel the background.
-export function owlCells(mood: Mood): string {
-  const hit = cache.get(mood)
+export function owlCells(mood: Mood, size: OwlSize = 'big'): string {
+  const hit = cache.get(`${size}:${mood}`)
   if (hit !== undefined) return hit
 
-  const rows = pixels(mood)
-  const words = new Uint32Array(16 * 8 * 3)
-  for (let cy = 0; cy < 8; cy++) {
-    for (let x = 0; x < 16; x++) {
+  const rows = pixels(mood, size)
+  const { columns, rows: cellRows } = owlSize(size)
+  const words = new Uint32Array(columns * cellRows * 3)
+  for (let cy = 0; cy < cellRows; cy++) {
+    for (let x = 0; x < columns; x++) {
       const top = COLORS[(rows[cy * 2] as string)[x] as string]
       const bottom = COLORS[(rows[cy * 2 + 1] as string)[x] as string]
-      const at = (cy * 16 + x) * 3
+      const at = (cy * columns + x) * 3
       if (top === undefined && bottom === undefined) words.set([0x20, DEFAULT, DEFAULT], at)
       else if (top === undefined) words.set([0x2584, bottom as number, DEFAULT], at)
       else words.set([0x2580, top, bottom ?? DEFAULT], at)
     }
   }
   const cells = base64(new Uint8Array(words.buffer))
-  cache.set(mood, cells)
+  cache.set(`${size}:${mood}`, cells)
 
   return cells
 }
 
 // The same pixels as an SVG, for the surfaces without a Raster.
-export function owlSvg(mood: Mood): string {
-  const rects = pixels(mood).flatMap((row, y) =>
+export function owlSvg(mood: Mood, size: OwlSize = 'big'): string {
+  const { columns, rows } = owlSize(size)
+  const rects = pixels(mood, size).flatMap((row, y) =>
     [...row].flatMap((c, x) => {
       const color = COLORS[c]
       return color === undefined ? [] : [`<rect x="${x}" y="${y}" width="1" height="1" fill="#${color.toString(16).padStart(6, '0')}"/>`]
     }),
   )
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">${rects.join('')}</svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${columns} ${rows * 2}" shape-rendering="crispEdges">${rects.join('')}</svg>`
 }

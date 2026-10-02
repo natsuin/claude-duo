@@ -12,7 +12,7 @@ export type Question = {
 
 export type Phase = 'ask' | 'feedback' | 'lessonDone' | 'noHearts'
 
-export type Mood = 'idle' | 'watch' | 'happy' | 'sad' | 'cheer'
+export type Mood = 'idle' | 'watch' | 'happy' | 'sad' | 'cheer' | 'glare'
 
 export type Game = {
   q: Question

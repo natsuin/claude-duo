@@ -3,7 +3,8 @@ import type { EngineInterface, Register, RenderElement } from 'claude-code'
 
 import type { Claude, Game, Mood, Profile } from '../types'
 
-import { owlCells, owlSvg } from './owl'
+import type { OwlSize } from './owl'
+import { owlCells, owlSize, owlSvg } from './owl'
 import { nextQuestion, pick } from './quiz'
 
 const PANE = 'duo'
@@ -12,6 +13,8 @@ const LESSON = 10
 const HEARTS = 5
 const DAY = 24 * 60 * 60 * 1000
 const NAG_AFTER_MS = 45_000
+const PANE_ROWS = 16 // the tallest the pane gets with the big owl: a question's feedback
+const PROMPT_ROWS = 15 // what a screen keeps besides a pane above the prompt (measured 13, plus slack for status lines)
 
 const GREEN = '#58CC02'
 const RED = '#FF4B4B'
@@ -59,7 +62,7 @@ function duration(ms: number) {
 
 async function openPane($: EngineInterface) {
   await update($, game, g => g ?? newGame())
-  return $.ui.open({ id: PANE, title: TITLE, focus: true })
+  return $.ui.open({ id: PANE, title: TITLE, focus: true, rows: PANE_ROWS })
 }
 
 async function saveProfile($: EngineInterface) {
@@ -218,20 +221,31 @@ export const register: Register = on => {
       ? `Claude has been coding for ${duration(elapsed)} and you've answered 0. Duo sees everything. 👀`
       : g.line
     // While Claude works, Duo keeps glancing over at the transcript.
-    const mood: Mood = isNagging ? 'sad' : g.phase === 'ask' && c.isWorking ? (Math.floor(c.now / 3000) % 2 === 0 ? 'watch' : 'idle') : g.mood
+    const mood: Mood = isNagging ? 'glare' : g.phase === 'ask' && c.isWorking ? (Math.floor(c.now / 3000) % 2 === 0 ? 'watch' : 'idle') : g.mood
+
+    // Everything has to fit the pane's rows, or it scrolls and cuts Duo's head off: the big owl
+    // needs PANE_ROWS (and some width for the bubble), else the small one, and a really short
+    // pane also drops the spacing and the key hints. A pane above the prompt shrinks to what it
+    // shows, so there its own height says nothing about the room it could have; the screen's
+    // height does, less the rows Claude Code keeps for the prompt and the transcript.
+    const isAbovePrompt = e.props.placement === 'inline' && e.viewport !== undefined
+    const room = isAbovePrompt ? Math.max(e.props.scroll.bodyRows, (e.viewport?.rows ?? 0) - PROMPT_ROWS) : e.props.scroll.bodyRows
+    const size: OwlSize = room >= PANE_ROWS && e.props.bodyColumns >= 50 ? 'big' : 'small'
+    const isTight = room < 13
+    const sprite = owlSize(size)
 
     let owl: RenderElement
     if (e.surface === 'terminal') {
       const { Raster } = $.ui.resolve(e)
-      owl = <Raster key="owl" columns={16} rows={8} cells={owlCells(mood)} />
+      owl = <Raster key="owl" columns={sprite.columns} rows={sprite.rows} cells={owlCells(mood, size)} />
     } else {
       const { Svg } = $.ui.resolve(e)
-      owl = <Svg source={owlSvg(mood)} alt="Duo the owl" width={64} height={64} />
+      owl = <Svg source={owlSvg(mood, size)} alt="Duo the owl" width={sprite.columns * 4} height={sprite.rows * 8} />
     }
 
-    const isNarrow = e.props.bodyColumns < 46
-    const barWidth = Math.max(8, Math.min(20, e.props.bodyColumns - 12))
+    const barWidth = Math.max(8, Math.min(20, e.props.bodyColumns - sprite.columns - 8))
     const filled = Math.round((g.done / LESSON) * barWidth)
+    const isGrid = e.props.bodyColumns >= 36
 
     const status = c.isWorking
       ? `⏳ Claude is working · ${duration(elapsed)} · ${c.tools} tool${c.tools === 1 ? '' : 's'}${c.lastTool ? ` · ${c.lastTool}` : ''}`
@@ -239,36 +253,40 @@ export const register: Register = on => {
         ? `✅ Claude finished in ${duration(c.lastMs)}. Esc, then read the reply`
         : '💤 Claude is idle. Practice anyway?'
 
+    // The bubble, the stats and Claude's progress all sit beside the owl, so the question and
+    // the answers fit under him.
     const header = (
-      <Box flexDirection={isNarrow ? 'column' : 'row'} gap={2} alignItems={isNarrow ? 'flex-start' : 'center'}>
-        {owl}
-        <Box flexDirection="column" flexShrink={1}>
-          <Box borderStyle="round" borderColor={GREEN} paddingX={1}>
-            <Text wrap="wrap">{bubble}</Text>
-          </Box>
+      <Box flexDirection="row" gap={2} alignItems="flex-start" flexShrink={0}>
+        <Box flexShrink={0}>{owl}</Box>
+        <Box flexDirection="column" flexShrink={1} flexGrow={1}>
+          {size === 'big' ? (
+            <Box borderStyle="round" borderColor={GREEN} paddingX={1}>
+              <Text wrap="wrap">{bubble}</Text>
+            </Box>
+          ) : (
+            <Text color={GREEN} wrap="wrap">{bubble}</Text>
+          )}
           <Box gap={2}>
             <Text color={RED}>{'♥'.repeat(Math.max(0, g.hearts))}<Text dimColor>{'♡'.repeat(HEARTS - Math.max(0, g.hearts))}</Text></Text>
             <Text color={GOLD} bold>⚡{p.xp} XP</Text>
             <Text color="#FF9600" bold>🔥{p.streak}</Text>
             {g.combo >= 2 && <Text color={PURPLE}>×{g.combo}</Text>}
           </Box>
+          <Text dimColor wrap="truncate-end">{status}</Text>
+          <Text>
+            <Text color={GREEN}>{'█'.repeat(filled)}</Text>
+            <Text dimColor>{'░'.repeat(barWidth - filled)}</Text>
+            <Text dimColor> {g.done}/{LESSON}</Text>
+          </Text>
         </Box>
       </Box>
-    )
-
-    const progress = (
-      <Text>
-        <Text color={GREEN}>{'█'.repeat(filled)}</Text>
-        <Text dimColor>{'░'.repeat(barWidth - filled)}</Text>
-        <Text dimColor> {g.done}/{LESSON}</Text>
-      </Text>
     )
 
     let body: RenderElement
     if (g.phase === 'lessonDone' || g.phase === 'noHearts') {
       const isDone = g.phase === 'lessonDone'
       body = (
-        <Box flexDirection="column" gap={1}>
+        <Box gap={2} marginTop={isTight ? 0 : 1} flexShrink={0}>
           <Box backgroundColor={isDone ? GOLD : RED} paddingX={1}>
             <Text color="#000000" bold>{isDone ? `🎉 Lesson complete! ${g.right}/${LESSON} · +20 XP bonus` : '💔 Out of hearts'}</Text>
           </Box>
@@ -277,44 +295,48 @@ export const register: Register = on => {
       )
     } else {
       const isRight = g.picked === g.q.answer
-      const choices = g.q.choices.map((choice, i) => {
-        if (g.phase === 'ask') {
-          return <Button key={`choice-${i}`} plain hotkey={String(i + 1)} label={choice} onPress={() => answer($, i)} />
-        }
-        if (i === g.q.answer) return <Text color={GREEN} bold>✓ {i + 1}: {choice}</Text>
-        if (i === g.picked) return <Text color={RED} strikethrough>✗ {i + 1}: {choice}</Text>
-        return <Text dimColor>  {i + 1}: {choice}</Text>
-      })
+      // Two by two where there's the width: two rows instead of four.
+      const choices = g.q.choices.map((choice, i) => (
+        <Box width={isGrid ? '50%' : '100%'}>
+          {g.phase === 'ask' ? (
+            <Button key={`choice-${i}`} plain hotkey={String(i + 1)} label={choice} onPress={() => answer($, i)} />
+          ) : i === g.q.answer ? (
+            <Text color={GREEN} bold>✓ {i + 1}: {choice}</Text>
+          ) : i === g.picked ? (
+            <Text color={RED} strikethrough>✗ {i + 1}: {choice}</Text>
+          ) : (
+            <Text dimColor>  {i + 1}: {choice}</Text>
+          )}
+        </Box>
+      ))
       body = (
-        <Box flexDirection="column" gap={1}>
-          <Box flexDirection="column">
-            <Text bold>{g.q.ask}</Text>
-            <Box paddingLeft={2} gap={2}>
-              <Text bold color={BLUE}>{g.q.big}</Text>
-              {g.q.hint !== '' && <Text dimColor>{g.q.hint}</Text>}
-            </Box>
+        <Box flexDirection="column" marginTop={isTight ? 0 : 1} flexShrink={0}>
+          <Text bold>{g.q.ask}</Text>
+          <Box paddingLeft={2} gap={2}>
+            <Text bold color={BLUE}>{g.q.big}</Text>
+            {g.q.hint !== '' && <Text dimColor>{g.q.hint}</Text>}
           </Box>
-          <Box flexDirection="column">{choices}</Box>
+          <Box flexDirection="row" flexWrap="wrap">{choices}</Box>
           {g.phase === 'feedback' && (
-            <Box flexDirection="column">
+            <Box gap={2}>
               <Box backgroundColor={isRight ? GREEN : RED} paddingX={1}>
                 <Text color="#ffffff" bold>{isRight ? '✓ Correct! +10 XP' : '✗ Not quite'}</Text>
               </Box>
-              <Text wrap="wrap">{g.q.explain}</Text>
               <Button key="continue" hotkey="c" variant="primary" autoFocus label="Continue" onPress={() => advance($)} />
             </Box>
           )}
+          {g.phase === 'feedback' && <Text wrap="wrap">{g.q.explain}</Text>}
         </Box>
       )
     }
 
     return (
-      <Box flexDirection="column" gap={1}>
+      <Box flexDirection="column">
         {header}
-        <Text dimColor wrap="truncate-end">{status}</Text>
-        {progress}
         {body}
-        <Text dimColor wrap="wrap">1-4 answer · c continue · Esc back to prompt · ctrl+x tab back to Duo · /duo off</Text>
+        {g.phase === 'ask' && !isTight && (
+          <Text dimColor wrap="truncate-end">1-4 answer · c continue · Esc back to prompt · ctrl+x tab back to Duo · /duo off</Text>
+        )}
       </Box>
     )
   })
